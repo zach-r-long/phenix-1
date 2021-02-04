@@ -29,17 +29,22 @@ are only available to Global Administrator or Global Viewer.
         </div>
       </div>
       <div class="navbar-end">
-        <div v-if="auth" class="navbar-item">
+        <div v-if="authEnabled && auth" class="navbar-item">
             <a role="button" class="button navbar-item is-light" @click="logout">Logout</a>
         </div>
       </div>
-
     </nav>
   </div>
 </template>
 
 <script>
   export default {
+    data () {
+      return {
+        authEnabled: process.env.VUE_APP_AUTH !== 'disabled',
+      }
+    },
+
     //  The computed elements determine if the user is already logged 
     //  in; if so, the routable links are available. If not, the sign 
     //  in routable link is the only one available. The role getter 
@@ -52,6 +57,12 @@ are only available to Global Administrator or Global Viewer.
     },
     
     methods: {
+      authEnabled () {
+        console.log('foo');
+        console.log(process.env.VUE_APP_AUTH);
+        return process.env.VUE_APP_AUTH !== 'disabled';
+      },
+
       //  These methods are used to logout a user; or, present 
       //  routable link based on a Global user role.
       logout () {

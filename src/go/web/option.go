@@ -20,7 +20,7 @@ type serverOptions struct {
 func newServerOptions(opts ...ServerOption) serverOptions {
 	o := serverOptions{
 		endpoint:  ":3000",
-		users:     []string{"admin@foo.com:foobar:Global Admin"},
+		users:     []string{"admin:admin:Global Admin"},
 		allowCORS: true, // TODO: default to false
 	}
 

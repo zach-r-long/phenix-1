@@ -19,13 +19,13 @@ import (
 	"phenix/api/experiment"
 	"phenix/api/scenario"
 	"phenix/api/vm"
-	"phenix/app"
 	"phenix/internal/mm"
 	"phenix/types"
+	v1 "phenix/types/version/v1"
 	putil "phenix/util"
 	"phenix/web/broker"
 	"phenix/web/cache"
-	"phenix/web/proto"
+	"phenix/web/contract"
 	"phenix/web/rbac"
 	"phenix/web/util"
 
@@ -36,13 +36,6 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/net/websocket"
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/types/known/structpb"
-)
-
-var (
-	marshaler   = protojson.MarshalOptions{EmitUnpopulated: true}
-	unmarshaler = protojson.UnmarshalOptions{AllowPartial: true, DiscardUnknown: true}
 )
 
 // GET /experiments
@@ -56,7 +49,7 @@ func GetExperiments(w http.ResponseWriter, r *http.Request) {
 		size  = query.Get("screenshot")
 	)
 
-	if !role.Allowed("experiments", "list") {
+	if !role.Allowed("experiments", "", "list") {
 		log.Warn("listing experiments not allowed for %s", ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -69,10 +62,10 @@ func GetExperiments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowed := []*proto.Experiment{}
+	allowed := []contract.Experiment{}
 
 	for _, exp := range experiments {
-		if !role.Allowed("experiments", "list", exp.Metadata.Name) {
+		if !role.Allowed("experiments", exp.Metadata.Name, "list") {
 			continue
 		}
 
@@ -113,10 +106,10 @@ func GetExperiments(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		allowed = append(allowed, util.ExperimentToProtobuf(exp, status, vms))
+		allowed = append(allowed, contract.NewExperiment(exp, status, vms))
 	}
 
-	body, err := marshaler.Marshal(&proto.ExperimentList{Experiments: allowed})
+	body, err := json.Marshal(util.WithRoot("experiments", allowed))
 	if err != nil {
 		log.Error("marshaling experiments - %v", err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -135,7 +128,7 @@ func CreateExperiment(w http.ResponseWriter, r *http.Request) {
 		role = ctx.Value("role").(rbac.Role)
 	)
 
-	if !role.Allowed("experiments", "create") {
+	if !role.Allowed("experiments", "", "create") {
 		log.Warn("creating experiments not allowed for %s", ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -148,8 +141,8 @@ func CreateExperiment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req proto.CreateExperimentRequest
-	if err := unmarshaler.Unmarshal(body, &req); err != nil {
+	var req contract.CreateExperimentRequest
+	if err := json.Unmarshal(body, &req); err != nil {
 		log.Error("unmashaling request body - %v", err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -167,8 +160,8 @@ func CreateExperiment(w http.ResponseWriter, r *http.Request) {
 		experiment.CreateWithName(req.Name),
 		experiment.CreateWithTopology(req.Topology),
 		experiment.CreateWithScenario(req.Scenario),
-		experiment.CreateWithVLANMin(int(req.VlanMin)),
-		experiment.CreateWithVLANMax(int(req.VlanMax)),
+		experiment.CreateWithVLANMin(req.VLANMin),
+		experiment.CreateWithVLANMax(req.VLANMax),
 	}
 
 	if err := experiment.Create(ctx, opts...); err != nil {
@@ -195,7 +188,7 @@ func CreateExperiment(w http.ResponseWriter, r *http.Request) {
 		// TODO
 	}
 
-	body, err = marshaler.Marshal(util.ExperimentToProtobuf(*exp, "", vms))
+	body, err = json.Marshal(contract.NewExperiment(*exp, "", vms))
 	if err != nil {
 		log.Error("marshaling experiment %s - %v", req.Name, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -203,7 +196,7 @@ func CreateExperiment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("experiments", "get", req.Name),
+		broker.NewRequestPolicy("experiments", req.Name, "get"),
 		broker.NewResource("experiment", req.Name, "create"),
 		body,
 	)
@@ -227,7 +220,7 @@ func GetExperiment(w http.ResponseWriter, r *http.Request) {
 		showDNB = query.Get("show_dnb") != ""
 	)
 
-	if !role.Allowed("experiments", "get", name) {
+	if !role.Allowed("experiments", name, "get") {
 		log.Warn("getting experiment %s not allowed for %s", name, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -255,7 +248,7 @@ func GetExperiment(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if role.Allowed("vms", "list", fmt.Sprintf("%s_%s", name, vm.Name)) {
+		if role.Allowed("vms", name, "list", vm.Name) {
 			if vm.Running && size != "" {
 				screenshot, err := util.GetScreenshot(name, vm.Name, size)
 				if err != nil {
@@ -280,7 +273,7 @@ func GetExperiment(w http.ResponseWriter, r *http.Request) {
 		allowed = allowed.Paginate(n, s)
 	}
 
-	body, err := marshaler.Marshal(util.ExperimentToProtobuf(*exp, status, allowed))
+	body, err := json.Marshal(contract.NewExperiment(*exp, status, allowed))
 	if err != nil {
 		log.Error("marshaling experiment %s - %v", name, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -301,7 +294,7 @@ func DeleteExperiment(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("experiments", "delete", name) {
+	if !role.Allowed("experiments", name, "delete") {
 		log.Warn("deleting experiment %s not allowed for %s", name, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -322,7 +315,7 @@ func DeleteExperiment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("experiments", "delete", name),
+		broker.NewRequestPolicy("experiments", name, "get"),
 		broker.NewResource("experiment", name, "delete"),
 		nil,
 	)
@@ -341,7 +334,7 @@ func StartExperiment(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("experiments/start", "update", name) {
+	if !role.Allowed("experiments/start", name, "update") {
 		log.Warn("starting experiment %s not allowed for %s", name, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -356,7 +349,7 @@ func StartExperiment(w http.ResponseWriter, r *http.Request) {
 	defer unlockExperiment(name)
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("experiments/start", "update", name),
+		broker.NewRequestPolicy("experiments", name, "get"),
 		broker.NewResource("experiment", name, "starting"),
 		nil,
 	)
@@ -385,7 +378,7 @@ func StartExperiment(w http.ResponseWriter, r *http.Request) {
 		case s := <-status:
 			if s.err != nil {
 				broker.Broadcast(
-					broker.NewRequestPolicy("experiments/start", "update", name),
+					broker.NewRequestPolicy("experiments", name, "get"),
 					broker.NewResource("experiment", name, "errorStarting"),
 					nil,
 				)
@@ -400,7 +393,7 @@ func StartExperiment(w http.ResponseWriter, r *http.Request) {
 				// TODO
 			}
 
-			body, err := marshaler.Marshal(util.ExperimentToProtobuf(*s.exp, "", vms))
+			body, err := json.Marshal(contract.NewExperiment(*s.exp, "", vms))
 			if err != nil {
 				log.Error("marshaling experiment %s - %v", name, err)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -408,7 +401,7 @@ func StartExperiment(w http.ResponseWriter, r *http.Request) {
 			}
 
 			broker.Broadcast(
-				broker.NewRequestPolicy("experiments/start", "update", name),
+				broker.NewRequestPolicy("experiments", name, "get"),
 				broker.NewResource("experiment", name, "start"),
 				body,
 			)
@@ -435,7 +428,7 @@ func StartExperiment(w http.ResponseWriter, r *http.Request) {
 			marshalled, _ := json.Marshal(status)
 
 			broker.Broadcast(
-				broker.NewRequestPolicy("experiments/start", "update", name),
+				broker.NewRequestPolicy("experiments", name, "get"),
 				broker.NewResource("experiment", name, "progress"),
 				marshalled,
 			)
@@ -456,7 +449,7 @@ func StopExperiment(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("experiments/stop", "update", name) {
+	if !role.Allowed("experiments/stop", name, "update") {
 		log.Warn("stopping experiment %s not allowed for %s", name, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -471,14 +464,14 @@ func StopExperiment(w http.ResponseWriter, r *http.Request) {
 	defer unlockExperiment(name)
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("experiments/stop", "update", name),
+		broker.NewRequestPolicy("experiments", name, "get"),
 		broker.NewResource("experiment", name, "stopping"),
 		nil,
 	)
 
 	if err := experiment.Stop(name); err != nil {
 		broker.Broadcast(
-			broker.NewRequestPolicy("experiments/stop", "update", name),
+			broker.NewRequestPolicy("experiments", name, "get"),
 			broker.NewResource("experiment", name, "errorStopping"),
 			nil,
 		)
@@ -498,7 +491,7 @@ func StopExperiment(w http.ResponseWriter, r *http.Request) {
 		// TODO
 	}
 
-	body, err := marshaler.Marshal(util.ExperimentToProtobuf(*exp, "", vms))
+	body, err := json.Marshal(contract.NewExperiment(*exp, "", vms))
 	if err != nil {
 		log.Error("marshaling experiment %s - %v", name, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -506,7 +499,7 @@ func StopExperiment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("experiments/stop", "update", name),
+		broker.NewRequestPolicy("experiments", name, "get"),
 		broker.NewResource("experiment", name, "stop"),
 		body,
 	)
@@ -525,7 +518,7 @@ func GetExperimentSchedule(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("experiments/schedule", "get", name) {
+	if !role.Allowed("experiments/schedule", name, "get") {
 		log.Warn("getting experiment schedule for %s not allowed for %s", name, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -547,7 +540,7 @@ func GetExperimentSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := marshaler.Marshal(util.ExperimentScheduleToProtobuf(*exp))
+	body, err := json.Marshal(contract.NewExperimentSchedule(*exp))
 	if err != nil {
 		log.Error("marshaling schedule for experiment %s - %v", name, err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -568,7 +561,7 @@ func ScheduleExperiment(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("experiments/schedule", "create", name) {
+	if !role.Allowed("experiments/schedule", name, "create") {
 		log.Warn("creating experiment schedule for %s not allowed for %s", name, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -590,8 +583,8 @@ func ScheduleExperiment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req proto.UpdateScheduleRequest
-	err = unmarshaler.Unmarshal(body, &req)
+	var req contract.UpdateExperimentScheduleRequest
+	err = json.Unmarshal(body, &req)
 	if err != nil {
 		log.Error("unmarshaling request body - %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -612,7 +605,7 @@ func ScheduleExperiment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err = marshaler.Marshal(util.ExperimentScheduleToProtobuf(*exp))
+	body, err = json.Marshal(contract.NewExperimentSchedule(*exp))
 	if err != nil {
 		log.Error("marshaling schedule for experiment %s - %v", name, err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -620,7 +613,7 @@ func ScheduleExperiment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("experiments/schedule", "create", name),
+		broker.NewRequestPolicy("experiments", name, "get"),
 		broker.NewResource("experiment", name, "schedule"),
 		body,
 	)
@@ -639,7 +632,7 @@ func GetExperimentCaptures(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("experiments/captures", "list", name) {
+	if !role.Allowed("experiments/captures", name, "list") {
 		log.Warn("listing experiment captures for %s not allowed for %s", name, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -651,12 +644,12 @@ func GetExperimentCaptures(w http.ResponseWriter, r *http.Request) {
 	)
 
 	for _, capture := range captures {
-		if role.Allowed("experiments/captures", "list", capture.VM) {
+		if role.Allowed("experiments/captures", name, "list", capture.VM) {
 			allowed = append(allowed, capture)
 		}
 	}
 
-	body, err := marshaler.Marshal(&proto.CaptureList{Captures: util.CapturesToProtobuf(allowed)})
+	body, err := json.Marshal(util.WithRoot("captures", allowed))
 	if err != nil {
 		log.Error("marshaling captures for experiment %s - %v", name, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -677,7 +670,7 @@ func GetExperimentFiles(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("experiments/files", "list", name) {
+	if !role.Allowed("experiments/files", name, "list") {
 		log.Warn("listing experiment files for %s not allowed for %s", name, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -690,7 +683,7 @@ func GetExperimentFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := marshaler.Marshal(&proto.FileList{Files: files})
+	body, err := json.Marshal(util.WithRoot("files", files))
 	if err != nil {
 		log.Error("marshaling file list for experiment %s - %v", name, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -712,7 +705,7 @@ func GetExperimentFile(w http.ResponseWriter, r *http.Request) {
 		file = vars["filename"]
 	)
 
-	if !role.Allowed("experiments/files", "get", name) {
+	if !role.Allowed("experiments/files", name, "get") {
 		log.Warn("getting experiment file for %s not allowed for %s", name, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -746,7 +739,7 @@ func GetVMs(w http.ResponseWriter, r *http.Request) {
 		perPage = query.Get("perPage")
 	)
 
-	if !role.Allowed("vms", "list") {
+	if !role.Allowed("vms", exp, "list") {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -760,7 +753,7 @@ func GetVMs(w http.ResponseWriter, r *http.Request) {
 	allowed := mm.VMs{}
 
 	for _, vm := range vms {
-		if role.Allowed("vms", "list", fmt.Sprintf("%s_%s", exp, vm.Name)) {
+		if role.Allowed("vms", exp, "list", vm.Name) {
 			if vm.Running && size != "" {
 				screenshot, err := util.GetScreenshot(exp, vm.Name, size)
 				if err != nil {
@@ -785,14 +778,7 @@ func GetVMs(w http.ResponseWriter, r *http.Request) {
 		allowed = allowed.Paginate(n, s)
 	}
 
-	resp := &proto.VMList{Total: uint32(len(allowed))}
-
-	resp.Vms = make([]*proto.VM, len(allowed))
-	for i, v := range allowed {
-		resp.Vms[i] = util.VMToProtobuf(exp, v)
-	}
-
-	body, err := marshaler.Marshal(resp)
+	body, err := json.Marshal(contract.NewVMList(allowed))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -815,7 +801,7 @@ func GetVM(w http.ResponseWriter, r *http.Request) {
 		size  = query.Get("screenshot")
 	)
 
-	if !role.Allowed("vms", "get", fmt.Sprintf("%s_%s", exp, name)) {
+	if !role.Allowed("vms", exp, "get", name) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -835,7 +821,7 @@ func GetVM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	body, err := marshaler.Marshal(util.VMToProtobuf(exp, *vm))
+	body, err := json.Marshal(vm)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -855,7 +841,7 @@ func UpdateVM(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("vms", "patch", fmt.Sprintf("%s_%s", exp, name)) {
+	if !role.Allowed("vms", exp, "patch", name) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -866,8 +852,8 @@ func UpdateVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req proto.UpdateVMRequest
-	if err := unmarshaler.Unmarshal(body, &req); err != nil {
+	var req contract.UpdateVMRequest
+	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -875,23 +861,21 @@ func UpdateVM(w http.ResponseWriter, r *http.Request) {
 	opts := []vm.UpdateOption{
 		vm.UpdateExperiment(exp),
 		vm.UpdateVM(name),
-		vm.UpdateWithCPU(int(req.Cpus)),
-		vm.UpdateWithMem(int(req.Ram)),
+		vm.UpdateWithCPU(int(req.CPUs)),
+		vm.UpdateWithMem(int(req.RAM)),
 		vm.UpdateWithDisk(req.Disk),
 	}
 
 	if req.Interface != nil {
-		opts = append(opts, vm.UpdateWithInterface(int(req.Interface.Index), req.Interface.Vlan))
+		opts = append(opts, vm.UpdateWithInterface(int(req.Interface.Index), req.Interface.VLAN))
 	}
 
-	switch req.Boot.(type) {
-	case *proto.UpdateVMRequest_DoNotBoot:
-		opts = append(opts, vm.UpdateWithDNB(req.GetDoNotBoot()))
+	if req.DoNotBoot != nil {
+		opts = append(opts, vm.UpdateWithDNB(*req.DoNotBoot))
 	}
 
-	switch req.ClusterHost.(type) {
-	case *proto.UpdateVMRequest_Host:
-		opts = append(opts, vm.UpdateWithHost(req.GetHost()))
+	if req.Host != nil {
+		opts = append(opts, vm.UpdateWithHost(*req.Host))
 	}
 
 	if err := vm.Update(opts...); err != nil {
@@ -915,14 +899,14 @@ func UpdateVM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	body, err = marshaler.Marshal(util.VMToProtobuf(exp, *vm))
+	body, err = json.Marshal(vm)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms", "patch", fmt.Sprintf("%s_%s", exp, name)),
+		broker.NewRequestPolicy("vms", exp, "get", name),
 		broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "update"),
 		body,
 	)
@@ -942,7 +926,7 @@ func DeleteVM(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("vms", "delete", fmt.Sprintf("%s_%s", exp, name)) {
+	if !role.Allowed("vms", exp, "delete", name) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -964,7 +948,7 @@ func DeleteVM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms", "delete", fmt.Sprintf("%s_%s", exp, name)),
+		broker.NewRequestPolicy("vms", exp, "get", name),
 		broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "delete"),
 		nil,
 	)
@@ -977,15 +961,14 @@ func StartVM(w http.ResponseWriter, r *http.Request) {
 	log.Debug("StartVM HTTP handler called")
 
 	var (
-		ctx      = r.Context()
-		role     = ctx.Value("role").(rbac.Role)
-		vars     = mux.Vars(r)
-		exp      = vars["exp"]
-		name     = vars["name"]
-		fullName = exp + "_" + name
+		ctx  = r.Context()
+		role = ctx.Value("role").(rbac.Role)
+		vars = mux.Vars(r)
+		exp  = vars["exp"]
+		name = vars["name"]
 	)
 
-	if !role.Allowed("vms/start", "update", fullName) {
+	if !role.Allowed("vms/start", exp, "update", name) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -999,15 +982,15 @@ func StartVM(w http.ResponseWriter, r *http.Request) {
 	defer unlockVM(exp, name)
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/start", "update", fullName),
-		broker.NewResource("experiment/vm", name, "starting"),
+		broker.NewRequestPolicy("vms", exp, "get", name),
+		broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "starting"),
 		nil,
 	)
 
 	if err := mm.StartVM(mm.NS(exp), mm.VMName(name)); err != nil {
 		broker.Broadcast(
-			broker.NewRequestPolicy("vms/start", "update", fullName),
-			broker.NewResource("experiment/vm", name, "errorStarting"),
+			broker.NewRequestPolicy("vms", exp, "get", name),
+			broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "errorStarting"),
 			nil,
 		)
 
@@ -1018,8 +1001,8 @@ func StartVM(w http.ResponseWriter, r *http.Request) {
 	v, err := vm.Get(exp, name)
 	if err != nil {
 		broker.Broadcast(
-			broker.NewRequestPolicy("vms/start", "update", fullName),
-			broker.NewResource("experiment/vm", name, "errorStarting"),
+			broker.NewRequestPolicy("vms", exp, "get", name),
+			broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "errorStarting"),
 			nil,
 		)
 
@@ -1034,15 +1017,15 @@ func StartVM(w http.ResponseWriter, r *http.Request) {
 		v.Screenshot = "data:image/png;base64," + base64.StdEncoding.EncodeToString(screenshot)
 	}
 
-	body, err := marshaler.Marshal(util.VMToProtobuf(exp, *v))
+	body, err := json.Marshal(v)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/start", "update", fullName),
-		broker.NewResource("experiment/vm", exp+"/"+name, "start"),
+		broker.NewRequestPolicy("vms", exp, "get", name),
+		broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "start"),
 		body,
 	)
 
@@ -1054,15 +1037,14 @@ func StopVM(w http.ResponseWriter, r *http.Request) {
 	log.Debug("StopVM HTTP handler called")
 
 	var (
-		ctx      = r.Context()
-		role     = ctx.Value("role").(rbac.Role)
-		vars     = mux.Vars(r)
-		exp      = vars["exp"]
-		name     = vars["name"]
-		fullName = exp + "_" + name
+		ctx  = r.Context()
+		role = ctx.Value("role").(rbac.Role)
+		vars = mux.Vars(r)
+		exp  = vars["exp"]
+		name = vars["name"]
 	)
 
-	if !role.Allowed("vms/stop", "update", fullName) {
+	if !role.Allowed("vms/stop", exp, "update", name) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -1076,15 +1058,15 @@ func StopVM(w http.ResponseWriter, r *http.Request) {
 	defer unlockVM(exp, name)
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/stop", "update", fullName),
-		broker.NewResource("experiment/vm", name, "stopping"),
+		broker.NewRequestPolicy("vms", exp, "get", name),
+		broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "stopping"),
 		nil,
 	)
 
 	if err := mm.StopVM(mm.NS(exp), mm.VMName(name)); err != nil {
 		broker.Broadcast(
-			broker.NewRequestPolicy("vms/stop", "update", fullName),
-			broker.NewResource("experiment/vm", name, "errorStopping"),
+			broker.NewRequestPolicy("vms", exp, "get", name),
+			broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "errorStopping"),
 			nil,
 		)
 
@@ -1095,8 +1077,8 @@ func StopVM(w http.ResponseWriter, r *http.Request) {
 	v, err := vm.Get(exp, name)
 	if err != nil {
 		broker.Broadcast(
-			broker.NewRequestPolicy("vms/stop", "update", fullName),
-			broker.NewResource("experiment/vm", name, "errorStopping"),
+			broker.NewRequestPolicy("vms", exp, "get", name),
+			broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "errorStopping"),
 			nil,
 		)
 
@@ -1104,15 +1086,15 @@ func StopVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := marshaler.Marshal(util.VMToProtobuf(exp, *v))
+	body, err := json.Marshal(v)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/stop", "update", fullName),
-		broker.NewResource("experiment/vm", exp+"/"+name, "stop"),
+		broker.NewRequestPolicy("vms", exp, "get", name),
+		broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "stop"),
 		body,
 	)
 
@@ -1124,17 +1106,16 @@ func RedeployVM(w http.ResponseWriter, r *http.Request) {
 	log.Debug("RedeployVM HTTP handler called")
 
 	var (
-		ctx      = r.Context()
-		role     = ctx.Value("role").(rbac.Role)
-		vars     = mux.Vars(r)
-		exp      = vars["exp"]
-		name     = vars["name"]
-		fullName = exp + "_" + name
-		query    = r.URL.Query()
-		inject   = query.Get("replicate-injects") != ""
+		ctx    = r.Context()
+		role   = ctx.Value("role").(rbac.Role)
+		vars   = mux.Vars(r)
+		exp    = vars["exp"]
+		name   = vars["name"]
+		query  = r.URL.Query()
+		inject = query.Get("replicate-injects") != ""
 	)
 
-	if !role.Allowed("vms/redeploy", "update", fullName) {
+	if !role.Allowed("vms/redeploy", exp, "update", name) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -1155,15 +1136,15 @@ func RedeployVM(w http.ResponseWriter, r *http.Request) {
 
 	v.Redeploying = true
 
-	body, _ := marshaler.Marshal(util.VMToProtobuf(exp, *v))
+	body, _ := json.Marshal(v)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/redeploy", "update", fullName),
-		broker.NewResource("experiment/vm", exp+"/"+name, "redeploying"),
+		broker.NewRequestPolicy("vms", exp, "get", name),
+		broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "redeploying"),
 		body,
 	)
 
@@ -1187,17 +1168,17 @@ func RedeployVM(w http.ResponseWriter, r *http.Request) {
 
 		// `body` will be nil if err above was EOF.
 		if body != nil {
-			var req proto.VMRedeployRequest
+			var req contract.VMRedeployRequest
 
 			// Update VM struct with values from POST request body.
-			if err := unmarshaler.Unmarshal(body, &req); err != nil {
+			if err := json.Unmarshal(body, &req); err != nil {
 				redeployed <- err
 				return
 			}
 
 			opts = []vm.RedeployOption{
-				vm.CPU(int(req.Cpus)),
-				vm.Memory(int(req.Ram)),
+				vm.CPU(int(req.CPUs)),
+				vm.Memory(int(req.RAM)),
 				vm.Disk(req.Disk),
 				vm.Inject(req.Injects),
 			}
@@ -1217,11 +1198,11 @@ func RedeployVM(w http.ResponseWriter, r *http.Request) {
 
 	err = <-redeployed
 	if err != nil {
-		log.Error("redeploying VM %s - %v", fullName, err)
+		log.Error("redeploying VM %s - %v", fmt.Sprintf("%s/%s", exp, name), err)
 
 		broker.Broadcast(
-			broker.NewRequestPolicy("vms/redeploy", "update", fullName),
-			broker.NewResource("experiment/vm", exp+"/"+name, "errorRedeploying"),
+			broker.NewRequestPolicy("vms", exp, "get", name),
+			broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "errorRedeploying"),
 			nil,
 		)
 
@@ -1243,11 +1224,11 @@ func RedeployVM(w http.ResponseWriter, r *http.Request) {
 		v.Screenshot = "data:image/png;base64," + base64.StdEncoding.EncodeToString(screenshot)
 	}
 
-	body, _ = marshaler.Marshal(util.VMToProtobuf(exp, *v))
+	body, _ = json.Marshal(v)
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/redeploy", "update", fullName),
-		broker.NewResource("experiment/vm", exp+"/"+name, "redeployed"),
+		broker.NewRequestPolicy("vms", exp, "get", name),
+		broker.NewResource("experiment/vm", fmt.Sprintf("%s/%s", exp, name), "redeployed"),
 		body,
 	)
 
@@ -1269,7 +1250,7 @@ func GetScreenshot(w http.ResponseWriter, r *http.Request) {
 		encode = query.Get("base64") != ""
 	)
 
-	if !role.Allowed("vms/screenshot", "get", fmt.Sprintf("%s_%s", exp, name)) {
+	if !role.Allowed("vms/screenshot", exp, "get", name) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -1306,7 +1287,7 @@ func GetVNC(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("vms/vnc", "get", fmt.Sprintf("%s_%s", exp, name)) {
+	if !role.Allowed("vms/vnc", exp, "get", name) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -1359,7 +1340,7 @@ func GetVMCaptures(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("vms/captures", "list", fmt.Sprintf("%s_%s", exp, name)) {
+	if !role.Allowed("vms/captures", exp, "list", name) {
 		log.Warn("getting captures for VM %s in experiment %s not allowed for %s", name, exp, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -1367,7 +1348,7 @@ func GetVMCaptures(w http.ResponseWriter, r *http.Request) {
 
 	captures := mm.GetVMCaptures(mm.NS(exp), mm.VMName(name))
 
-	body, err := marshaler.Marshal(&proto.CaptureList{Captures: util.CapturesToProtobuf(captures)})
+	body, err := json.Marshal(util.WithRoot("captures", captures))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1388,7 +1369,7 @@ func StartVMCapture(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("vms/captures", "create", fmt.Sprintf("%s_%s", exp, name)) {
+	if !role.Allowed("vms/captures", exp, "create", name) {
 		log.Warn("starting capture for VM %s in experiment %s not allowed for %s", name, exp, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -1401,8 +1382,8 @@ func StartVMCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req proto.StartCaptureRequest
-	err = unmarshaler.Unmarshal(body, &req)
+	var req contract.StartCaptureRequest
+	err = json.Unmarshal(body, &req)
 	if err != nil {
 		log.Error("unmarshaling request body - %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1416,7 +1397,7 @@ func StartVMCapture(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/captures", "create", fmt.Sprintf("%s_%s", exp, name)),
+		broker.NewRequestPolicy("vms", exp, "get", name),
 		broker.NewResource("experiment/vm/capture", fmt.Sprintf("%s/%s", exp, name), "start"),
 		body,
 	)
@@ -1436,7 +1417,7 @@ func StopVMCaptures(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("vms/captures", "delete", fmt.Sprintf("%s_%s", exp, name)) {
+	if !role.Allowed("vms/captures", exp, "delete", name) {
 		log.Warn("stopping capture for VM %s in experiment %s not allowed for %s", name, exp, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -1450,7 +1431,7 @@ func StopVMCaptures(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/captures", "delete", fmt.Sprintf("%s_%s", exp, name)),
+		broker.NewRequestPolicy("vms", exp, "get", name),
 		broker.NewResource("experiment/vm/capture", fmt.Sprintf("%s/%s", exp, name), "stop"),
 		nil,
 	)
@@ -1470,7 +1451,7 @@ func GetVMSnapshots(w http.ResponseWriter, r *http.Request) {
 		name = vars["name"]
 	)
 
-	if !role.Allowed("vms/snapshots", "list", fmt.Sprintf("%s_%s", exp, name)) {
+	if !role.Allowed("vms/snapshots", exp, "list", name) {
 		log.Warn("listing snapshots for VM %s in experiment %s not allowed for %s", name, exp, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -1483,7 +1464,7 @@ func GetVMSnapshots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := marshaler.Marshal(&proto.SnapshotList{Snapshots: snapshots})
+	body, err := json.Marshal(util.WithRoot("snapshots", snapshots))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1497,15 +1478,14 @@ func SnapshotVM(w http.ResponseWriter, r *http.Request) {
 	log.Debug("SnapshotVM HTTP handler called")
 
 	var (
-		ctx      = r.Context()
-		role     = ctx.Value("role").(rbac.Role)
-		vars     = mux.Vars(r)
-		exp      = vars["exp"]
-		name     = vars["name"]
-		fullName = exp + "_" + name
+		ctx  = r.Context()
+		role = ctx.Value("role").(rbac.Role)
+		vars = mux.Vars(r)
+		exp  = vars["exp"]
+		name = vars["name"]
 	)
 
-	if !role.Allowed("vms/snapshots", "create", fullName) {
+	if !role.Allowed("vms/snapshots", exp, "create", name) {
 		log.Warn("snapshotting VM %s in experiment %s not allowed for %s", name, exp, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -1518,8 +1498,8 @@ func SnapshotVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req proto.SnapshotRequest
-	err = unmarshaler.Unmarshal(body, &req)
+	var req contract.SnapshotRequest
+	err = json.Unmarshal(body, &req)
 	if err != nil {
 		log.Error("unmarshaling request body - %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1535,8 +1515,8 @@ func SnapshotVM(w http.ResponseWriter, r *http.Request) {
 	defer unlockVM(exp, name)
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/snapshots", "create", fullName),
-		broker.NewResource("experiment/vm/snapshot", exp+"/"+name, "creating"),
+		broker.NewRequestPolicy("vms", exp, "get", name),
+		broker.NewResource("experiment/vm/snapshot", fmt.Sprintf("%s/%s", exp, name), "creating"),
 		nil,
 	)
 
@@ -1561,8 +1541,8 @@ func SnapshotVM(w http.ResponseWriter, r *http.Request) {
 				marshalled, _ := json.Marshal(status)
 
 				broker.Broadcast(
-					broker.NewRequestPolicy("vms/snapshots", "create", fullName),
-					broker.NewResource("experiment/vm/snapshot", exp+"/"+name, "progress"),
+					broker.NewRequestPolicy("vms", exp, "get", name),
+					broker.NewResource("experiment/vm/snapshot", fmt.Sprintf("%s/%s", exp, name), "progress"),
 					marshalled,
 				)
 			}
@@ -1573,8 +1553,8 @@ func SnapshotVM(w http.ResponseWriter, r *http.Request) {
 
 	if err := vm.Snapshot(exp, name, req.Filename, cb); err != nil {
 		broker.Broadcast(
-			broker.NewRequestPolicy("vms/snapshots", "create", fullName),
-			broker.NewResource("experiment/vm/snapshot", exp+"/"+name, "errorCreating"),
+			broker.NewRequestPolicy("vms", exp, "get", name),
+			broker.NewResource("experiment/vm/snapshot", fmt.Sprintf("%s/%s", exp, name), "errorCreating"),
 			nil,
 		)
 
@@ -1584,8 +1564,8 @@ func SnapshotVM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/snapshots", "create", fullName),
-		broker.NewResource("experiment/vm/snapshot", exp+"/"+name, "create"),
+		broker.NewRequestPolicy("vms", exp, "get", name),
+		broker.NewResource("experiment/vm/snapshot", fmt.Sprintf("%s/%s", exp, name), "create"),
 		nil,
 	)
 
@@ -1597,16 +1577,15 @@ func RestoreVM(w http.ResponseWriter, r *http.Request) {
 	log.Debug("RestoreVM HTTP handler called")
 
 	var (
-		ctx      = r.Context()
-		role     = ctx.Value("role").(rbac.Role)
-		vars     = mux.Vars(r)
-		exp      = vars["exp"]
-		name     = vars["name"]
-		fullName = exp + "_" + name
-		snap     = vars["snapshot"]
+		ctx  = r.Context()
+		role = ctx.Value("role").(rbac.Role)
+		vars = mux.Vars(r)
+		exp  = vars["exp"]
+		name = vars["name"]
+		snap = vars["snapshot"]
 	)
 
-	if !role.Allowed("vms/snapshots", "update", fullName) {
+	if !role.Allowed("vms/snapshots", exp, "update", name) {
 		log.Warn("restoring VM %s in experiment %s not allowed for %s", name, exp, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -1621,14 +1600,14 @@ func RestoreVM(w http.ResponseWriter, r *http.Request) {
 	defer unlockVM(exp, name)
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/snapshots", "create", fullName),
+		broker.NewRequestPolicy("vms", exp, "get", name),
 		broker.NewResource("experiment/vm/snapshot", fmt.Sprintf("%s/%s", exp, name), "restoring"),
 		nil,
 	)
 
 	if err := vm.Restore(exp, name, snap); err != nil {
 		broker.Broadcast(
-			broker.NewRequestPolicy("vms/snapshots", "create", fullName),
+			broker.NewRequestPolicy("vms", exp, "get", name),
 			broker.NewResource("experiment/vm/snapshot", fmt.Sprintf("%s/%s", exp, name), "errorRestoring"),
 			nil,
 		)
@@ -1639,8 +1618,8 @@ func RestoreVM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/snapshots", "create", fullName),
-		broker.NewResource("experiment/vm/snapshot", exp+"/"+name, "restore"),
+		broker.NewRequestPolicy("vms", exp, "get", name),
+		broker.NewResource("experiment/vm/snapshot", fmt.Sprintf("%s/%s", exp, name), "restore"),
 		nil,
 	)
 
@@ -1652,15 +1631,14 @@ func CommitVM(w http.ResponseWriter, r *http.Request) {
 	log.Debug("CommitVM HTTP handler called")
 
 	var (
-		ctx      = r.Context()
-		role     = ctx.Value("role").(rbac.Role)
-		vars     = mux.Vars(r)
-		exp      = vars["exp"]
-		name     = vars["name"]
-		fullName = exp + "_" + name
+		ctx  = r.Context()
+		role = ctx.Value("role").(rbac.Role)
+		vars = mux.Vars(r)
+		exp  = vars["exp"]
+		name = vars["name"]
 	)
 
-	if !role.Allowed("vms/commit", "create", fullName) {
+	if !role.Allowed("vms/commit", exp, "create", name) {
 		log.Warn("committing VM %s in experiment %s not allowed for %s", name, exp, ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -1680,8 +1658,8 @@ func CommitVM(w http.ResponseWriter, r *http.Request) {
 	// empty string to `api.CommitToDisk` to let it create a copy based on
 	// the existing file name for the base image.
 	if len(body) != 0 {
-		var req proto.BackingImageRequest
-		err = unmarshaler.Unmarshal(body, &req)
+		var req contract.BackingImageRequest
+		err = json.Unmarshal(body, &req)
 		if err != nil {
 			log.Error("unmarshaling request body - %v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1720,12 +1698,12 @@ func CommitVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload := &proto.BackingImageResponse{Disk: filename}
-	body, _ = marshaler.Marshal(payload)
+	payload := contract.NewBackingImageResponse(filename, nil)
+	body, _ = json.Marshal(payload)
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/commit", "create", fullName),
-		broker.NewResource("experiment/vm/commit", exp+"/"+name, "committing"),
+		broker.NewRequestPolicy("vms", exp, "get", name),
+		broker.NewResource("experiment/vm/commit", fmt.Sprintf("%s/%s", exp, name), "committing"),
 		body,
 	)
 
@@ -1742,8 +1720,8 @@ func CommitVM(w http.ResponseWriter, r *http.Request) {
 			marshalled, _ := json.Marshal(status)
 
 			broker.Broadcast(
-				broker.NewRequestPolicy("vms/commit", "create", fullName),
-				broker.NewResource("experiment/vm/commit", exp+"/"+name, "progress"),
+				broker.NewRequestPolicy("vms", exp, "get", name),
+				broker.NewResource("experiment/vm/commit", fmt.Sprintf("%s/%s", exp, name), "progress"),
 				marshalled,
 			)
 		}
@@ -1753,8 +1731,8 @@ func CommitVM(w http.ResponseWriter, r *http.Request) {
 
 	if filename, err = vm.CommitToDisk(exp, name, filename, cb); err != nil {
 		broker.Broadcast(
-			broker.NewRequestPolicy("vms/commit", "create", fullName),
-			broker.NewResource("experiment/vm/commit", exp+"/"+name, "errorCommitting"),
+			broker.NewRequestPolicy("vms", exp, "get", name),
+			broker.NewResource("experiment/vm/commit", fmt.Sprintf("%s/%s", exp, name), "errorCommitting"),
 			nil,
 		)
 
@@ -1766,8 +1744,8 @@ func CommitVM(w http.ResponseWriter, r *http.Request) {
 	v, err := vm.Get(exp, name)
 	if err != nil {
 		broker.Broadcast(
-			broker.NewRequestPolicy("vms/commit", "create", fullName),
-			broker.NewResource("experiment/vm/commit", exp+"/"+name, "errorCommitting"),
+			broker.NewRequestPolicy("vms", exp, "get", name),
+			broker.NewResource("experiment/vm/commit", fmt.Sprintf("%s/%s", exp, name), "errorCommitting"),
 			nil,
 		)
 
@@ -1775,12 +1753,12 @@ func CommitVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload.Vm = util.VMToProtobuf(exp, *v)
-	body, _ = marshaler.Marshal(payload)
+	payload.VM = v
+	body, _ = json.Marshal(payload)
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("vms/commit", "create", fmt.Sprintf("%s_%s", exp, name)),
-		broker.NewResource("experiment/vm/commit", exp+"/"+name, "commit"),
+		broker.NewRequestPolicy("vms", exp, "get", name),
+		broker.NewResource("experiment/vm/commit", fmt.Sprintf("%s/%s", exp, name), "commit"),
 		body,
 	)
 
@@ -1798,7 +1776,7 @@ func GetAllVMs(w http.ResponseWriter, r *http.Request) {
 		size  = query.Get("screenshot")
 	)
 
-	if !role.Allowed("vms", "list") {
+	if !role.Allowed("vms", "", "list") {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -1810,7 +1788,7 @@ func GetAllVMs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowed := []*proto.VM{}
+	allowed := []mm.VM{}
 
 	for _, exp := range exps {
 		vms, err := vm.List(exp.Spec.ExperimentName)
@@ -1819,7 +1797,7 @@ func GetAllVMs(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for _, v := range vms {
-			if !role.Allowed("vms", "list", fmt.Sprintf("%s_%s", exp.Spec.ExperimentName, v.Name)) {
+			if !role.Allowed("vms", exp.Spec.ExperimentName(), "list", v.Name) {
 				continue
 			}
 
@@ -1837,43 +1815,11 @@ func GetAllVMs(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			allowed = append(allowed, util.VMToProtobuf(exp.Spec.ExperimentName, v))
+			allowed = append(allowed, v)
 		}
 	}
 
-	resp := &proto.VMList{Total: uint32(len(allowed)), Vms: allowed}
-
-	body, err := marshaler.Marshal(resp)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Write(body)
-}
-
-// GET /applications
-func GetApplications(w http.ResponseWriter, r *http.Request) {
-	log.Debug("GetApplications HTTP handler called")
-
-	var (
-		ctx  = r.Context()
-		role = ctx.Value("role").(rbac.Role)
-	)
-
-	if !role.Allowed("applications", "list") {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	allowed := []string{}
-	for _, app := range app.List() {
-		if role.Allowed("applications", "list", app) {
-			allowed = append(allowed, app)
-		}
-	}
-
-	body, err := marshaler.Marshal(&proto.AppList{Applications: allowed})
+	body, err := json.Marshal(contract.NewVMList(allowed))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1891,7 +1837,7 @@ func GetTopologies(w http.ResponseWriter, r *http.Request) {
 		role = ctx.Value("role").(rbac.Role)
 	)
 
-	if !role.Allowed("topologies", "list") {
+	if !role.Allowed("topologies", "", "list") {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -1904,12 +1850,12 @@ func GetTopologies(w http.ResponseWriter, r *http.Request) {
 
 	allowed := []string{}
 	for _, topo := range topologies {
-		if role.Allowed("topologies", "list", topo.Metadata.Name) {
+		if role.Allowed("topologies", "", "list", topo.Metadata.Name) {
 			allowed = append(allowed, topo.Metadata.Name)
 		}
 	}
 
-	body, err := marshaler.Marshal(&proto.TopologyList{Topologies: allowed})
+	body, err := json.Marshal(util.WithRoot("topologies", allowed))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1929,7 +1875,7 @@ func GetScenarios(w http.ResponseWriter, r *http.Request) {
 		topo = vars["topo"]
 	)
 
-	if !role.Allowed("scenarios", "list") {
+	if !role.Allowed("scenarios", "", "list") {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -1940,7 +1886,7 @@ func GetScenarios(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowed := make(map[string]*structpb.ListValue)
+	allowed := make(map[string][]string)
 
 	for _, s := range scenarios {
 		// We only care about scenarios pertaining to the given topology.
@@ -1948,24 +1894,23 @@ func GetScenarios(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if role.Allowed("scenarios", "list", s.Metadata.Name) {
+		if role.Allowed("scenarios", "", "list", s.Metadata.Name) {
 			apps, err := scenario.AppList(s.Metadata.Name)
 			if err != nil {
 				log.Error("getting apps for scenario %s: %v", s.Metadata.Name, err)
 				continue
 			}
 
-			list := make([]interface{}, len(apps))
+			list := make([]string, len(apps))
 			for i, a := range apps {
 				list[i] = a
 			}
 
-			val, _ := structpb.NewList(list)
-			allowed[s.Metadata.Name] = val
+			allowed[s.Metadata.Name] = list
 		}
 	}
 
-	body, err := marshaler.Marshal(&proto.ScenarioList{Scenarios: allowed})
+	body, err := json.Marshal(util.WithRoot("scenarios", allowed))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1983,7 +1928,7 @@ func GetDisks(w http.ResponseWriter, r *http.Request) {
 		role = ctx.Value("role").(rbac.Role)
 	)
 
-	if !role.Allowed("disks", "list") {
+	if !role.Allowed("disks", "", "list") {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -1996,12 +1941,12 @@ func GetDisks(w http.ResponseWriter, r *http.Request) {
 
 	allowed := []string{}
 	for _, disk := range disks {
-		if role.Allowed("disks", "list", disk.Name) {
+		if role.Allowed("disks", "", "list", disk.Name) {
 			allowed = append(allowed, disk.Name)
 		}
 	}
 
-	body, err := marshaler.Marshal(&proto.DiskList{Disks: allowed})
+	body, err := json.Marshal(util.WithRoot("disks", allowed))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2019,7 +1964,7 @@ func GetClusterHosts(w http.ResponseWriter, r *http.Request) {
 		role = ctx.Value("role").(rbac.Role)
 	)
 
-	if !role.Allowed("hosts", "list") {
+	if !role.Allowed("hosts", "", "list") {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -2032,7 +1977,7 @@ func GetClusterHosts(w http.ResponseWriter, r *http.Request) {
 
 	allowed := []mm.Host{}
 	for _, host := range hosts {
-		if role.Allowed("hosts", "list", host.Name) {
+		if role.Allowed("hosts", "", "list", host.Name) {
 			allowed = append(allowed, host)
 		}
 	}
@@ -2211,7 +2156,7 @@ func GetUsers(w http.ResponseWriter, r *http.Request) {
 		role = ctx.Value("role").(rbac.Role)
 	)
 
-	if !role.Allowed("users", "list") {
+	if !role.Allowed("users", "", "list") {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -2222,15 +2167,20 @@ func GetUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var resp []*proto.User
+	var resp []*v1.UserSpec
 
 	for _, u := range users {
-		if role.Allowed("users", "list", u.Username()) {
-			resp = append(resp, util.UserToProtobuf(*u))
+		spec := u.Spec
+
+		if role.Allowed("users", "", "list", spec.Username) {
+			spec.Password = ""
+			spec.Tokens = nil
+
+			resp = append(resp, spec)
 		}
 	}
 
-	body, err := marshaler.Marshal(&proto.UserList{Users: resp})
+	body, err := json.Marshal(util.WithRoot("users", resp))
 	if err != nil {
 		log.Error("marshaling users: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2249,7 +2199,7 @@ func CreateUser(w http.ResponseWriter, r *http.Request) {
 		role = ctx.Value("role").(rbac.Role)
 	)
 
-	if !role.Allowed("users", "create") {
+	if !role.Allowed("users", "", "create") {
 		log.Warn("creating users not allowed for %s", ctx.Value("user").(string))
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -2262,39 +2212,51 @@ func CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req proto.CreateUserRequest
-	if err := unmarshaler.Unmarshal(body, &req); err != nil {
+	contract := struct {
+		Username      string   `json:"username"`
+		Password      string   `json:"password"`
+		FirstName     string   `json:"first_name"`
+		LastName      string   `json:"last_name"`
+		RoleName      string   `json:"role_name"`
+		Experiments   []string `json:"experiments"`
+		ResourceNames []string `json:"resource_names"`
+	}{}
+
+	if err := json.Unmarshal(body, &contract); err != nil {
 		log.Error("unmashaling request body - %v", err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
-	user := rbac.NewUser(req.GetUsername(), req.GetPassword())
+	user := rbac.NewUser(contract.Username, contract.Password)
 
-	user.Spec.FirstName = req.GetFirstName()
-	user.Spec.LastName = req.GetLastName()
+	user.Spec.FirstName = contract.FirstName
+	user.Spec.LastName = contract.LastName
 
-	uRole, err := rbac.RoleFromConfig(req.GetRoleName())
+	uRole, err := rbac.RoleFromConfig(contract.RoleName)
 	if err != nil {
-		log.Error("role name not found - %s", req.GetRoleName())
+		log.Error("role name not found - %s", contract.RoleName)
 		http.Error(w, "role not found", http.StatusBadRequest)
 		return
 	}
 
-	uRole.SetResourceNames(req.GetResourceNames()...)
+	uRole.SetExperiments(contract.Experiments...)
+	uRole.SetResourceNames(contract.ResourceNames...)
 
 	// allow user to get their own user details
 	uRole.AddPolicy(
 		[]string{"users"},
-		[]string{req.GetUsername()},
+		nil,
 		[]string{"get"},
+		[]string{contract.Username},
 	)
 
 	user.SetRole(uRole)
 
-	resp := util.UserToProtobuf(*user)
+	user.Spec.Password = ""
+	user.Spec.Tokens = nil
 
-	body, err = marshaler.Marshal(resp)
+	body, err = json.Marshal(user.Spec)
 	if err != nil {
 		log.Error("marshaling user %s: %v", user.Username, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2302,8 +2264,8 @@ func CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("users", "create", ""),
-		broker.NewResource("user", req.GetUsername(), "create"),
+		broker.NewRequestPolicy("users", "", "get"),
+		broker.NewResource("user", user.Username(), "create"),
 		body,
 	)
 
@@ -2321,7 +2283,7 @@ func GetUser(w http.ResponseWriter, r *http.Request) {
 		uname = vars["username"]
 	)
 
-	if !role.Allowed("users", "get", uname) {
+	if !role.Allowed("users", "", "get", uname) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -2332,16 +2294,12 @@ func GetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := &proto.User{
-		Username:  user.Username(),
-		FirstName: user.FirstName(),
-		LastName:  user.LastName(),
-		RoleName:  user.RoleName(),
-	}
+	user.Spec.Password = ""
+	user.Spec.Tokens = nil
 
-	body, err := marshaler.Marshal(resp)
+	body, err := json.Marshal(user.Spec)
 	if err != nil {
-		log.Error("marshaling user %s: %v", user.Username, err)
+		log.Error("marshaling user %s: %v", user.Username(), err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2360,7 +2318,7 @@ func UpdateUser(w http.ResponseWriter, r *http.Request) {
 		uname = vars["username"]
 	)
 
-	if !role.Allowed("users", "patch", uname) {
+	if !role.Allowed("users", "", "patch", uname) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -2371,8 +2329,16 @@ func UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req proto.UpdateUserRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	contract := struct {
+		Username      string   `json:"username"`
+		FirstName     string   `json:"first_name"`
+		LastName      string   `json:"last_name"`
+		RoleName      string   `json:"role_name"`
+		Experiments   []string `json:"experiments"`
+		ResourceNames []string `json:"resource_names"`
+	}{}
+
+	if err := json.Unmarshal(body, &contract); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -2383,45 +2349,48 @@ func UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.FirstName != "" {
-		if err := u.UpdateFirstName(req.FirstName); err != nil {
+	if contract.FirstName != "" {
+		if err := u.UpdateFirstName(contract.FirstName); err != nil {
 			log.Error("updating first name for user %s: %v", uname, err)
 			http.Error(w, "unable to update user", http.StatusInternalServerError)
 			return
 		}
 	}
 
-	if req.LastName != "" {
-		if err := u.UpdateLastName(req.LastName); err != nil {
+	if contract.LastName != "" {
+		if err := u.UpdateLastName(contract.LastName); err != nil {
 			log.Error("updating last name for user %s: %v", uname, err)
 			http.Error(w, "unable to update user", http.StatusInternalServerError)
 			return
 		}
 	}
 
-	if req.RoleName != "" {
-		uRole, err := rbac.RoleFromConfig(req.GetRoleName())
+	if contract.RoleName != "" {
+		uRole, err := rbac.RoleFromConfig(contract.RoleName)
 		if err != nil {
-			log.Error("role name not found - %s", req.GetRoleName())
+			log.Error("role name not found - %s", contract.RoleName)
 			http.Error(w, "role not found", http.StatusBadRequest)
 			return
 		}
 
-		uRole.SetResourceNames(req.GetResourceNames()...)
+		uRole.SetExperiments(contract.Experiments...)
+		uRole.SetResourceNames(contract.ResourceNames...)
 
 		// allow user to get their own user details
 		uRole.AddPolicy(
 			[]string{"users"},
-			[]string{uname},
+			nil,
 			[]string{"get"},
+			[]string{uname},
 		)
 
 		u.SetRole(uRole)
 	}
 
-	resp := util.UserToProtobuf(*u)
+	u.Spec.Password = ""
+	u.Spec.Tokens = nil
 
-	body, err = marshaler.Marshal(resp)
+	body, err = json.Marshal(u.Spec)
 	if err != nil {
 		log.Error("marshaling user %s: %v", uname, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2429,7 +2398,7 @@ func UpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("users", "patch", uname),
+		broker.NewRequestPolicy("users", "", "get", uname),
 		broker.NewResource("user", uname, "update"),
 		body,
 	)
@@ -2454,7 +2423,7 @@ func DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !role.Allowed("users", "delete", uname) {
+	if !role.Allowed("users", "", "delete", uname) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -2466,7 +2435,7 @@ func DeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	broker.Broadcast(
-		broker.NewRequestPolicy("users", "delete", uname),
+		broker.NewRequestPolicy("users", "", "get", uname),
 		broker.NewResource("user", uname, "delete"),
 		nil,
 	)
@@ -2484,17 +2453,29 @@ func Signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req proto.SignupUserRequest
-	if err := unmarshaler.Unmarshal(body, &req); err != nil {
+	contract := struct {
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	}{}
+
+	if err := json.Unmarshal(body, &contract); err != nil {
 		log.Error("unmashaling request body - %v", err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
-	u := rbac.NewUser(req.GetUsername(), req.GetPassword())
+	u := rbac.NewUser(contract.Username, contract.Password)
 
-	u.Spec.FirstName = req.GetFirstName()
-	u.Spec.LastName = req.GetLastName()
+	u.Spec.FirstName = contract.FirstName
+	u.Spec.LastName = contract.LastName
+
+	if err := u.Save(); err != nil {
+		log.Error("saving user %s: %v", contract.Username, err)
+		http.Error(w, "unable to create user", http.StatusInternalServerError)
+		return
+	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": u.Username(),
@@ -2508,19 +2489,18 @@ func Signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := u.AddToken(signed, time.Now().Format(time.RFC3339)); err != nil {
+	now := time.Now().Format(time.RFC3339)
+
+	if err := u.AddToken(signed, now); err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
 
-	resp := &proto.LoginResponse{
-		Username:  u.Username(),
-		FirstName: u.FirstName(),
-		LastName:  u.LastName(),
-		Token:     signed,
-	}
+	u.Spec.Password = ""
+	u.Spec.Tokens = map[string]string{signed: now}
+	u.Spec.Role = nil
 
-	body, err = marshaler.Marshal(resp)
+	body, err = json.Marshal(u.Spec)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2557,18 +2537,22 @@ func Login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		var req proto.LoginRequest
-		if err := unmarshaler.Unmarshal(body, &req); err != nil {
+		contract := struct {
+			Username string `json:"user"`
+			Password string `json:"pass"`
+		}{}
+
+		if err := json.Unmarshal(body, &contract); err != nil {
 			http.Error(w, "invalid data provided in POST", http.StatusBadRequest)
 			return
 		}
 
-		if user = req.User; user == "" {
+		if user = contract.Username; user == "" {
 			http.Error(w, "invalid username provided in POST", http.StatusBadRequest)
 			return
 		}
 
-		if pass = req.Pass; pass == "" {
+		if pass = contract.Password; pass == "" {
 			http.Error(w, "invalid password provided in POST", http.StatusBadRequest)
 			return
 		}
@@ -2600,20 +2584,17 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := u.AddToken(signed, time.Now().Format(time.RFC3339)); err != nil {
+	now := time.Now().Format(time.RFC3339)
+
+	if err := u.AddToken(signed, now); err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
 
-	resp := &proto.LoginResponse{
-		Username:  u.Username(),
-		FirstName: u.FirstName(),
-		LastName:  u.LastName(),
-		Role:      u.RoleName(),
-		Token:     signed,
-	}
+	u.Spec.Password = ""
+	u.Spec.Tokens = map[string]string{signed: now}
 
-	body, err := marshaler.Marshal(resp)
+	body, err := json.Marshal(u.Spec)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2624,6 +2605,12 @@ func Login(w http.ResponseWriter, r *http.Request) {
 
 func Logout(w http.ResponseWriter, r *http.Request) {
 	log.Debug("Logout HTTP handler called")
+
+	if o.jwtKey == "" {
+		// Auth is disabled, so logging out is a no-op.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 
 	var (
 		ctx   = r.Context()

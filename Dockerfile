@@ -15,9 +15,6 @@ RUN npm install \
 
 FROM golang:1.14 AS gobuilder
 
-RUN apt update \
-  && apt install -y protobuf-compiler xz-utils
-
 COPY ./Makefile /phenix/Makefile
 COPY ./src/go   /phenix/src/go
 

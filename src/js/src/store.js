@@ -1,8 +1,7 @@
-import Vue        from 'vue'
-import Vuex       from 'vuex'
-// import { Toast }  from 'buefy/dist/components/toast'
+import Vue  from 'vue'
+import Vuex from 'vuex'
 
-import router     from './router'
+import router from './router'
 
 Vue.use( Vuex )
 
@@ -12,7 +11,6 @@ export default new Vuex.Store({
     token:    null,
     role:     null,
     auth:     null
-//     logs:     []
   },
 
   mutations: {
@@ -21,13 +19,12 @@ export default new Vuex.Store({
       state.token    = user.token;
       state.role     = user.role;
       state.auth     = true;
-//       state.logs     = [];
 
       if ( remember ) {
-        localStorage.setItem( 'user',  state.username );
-        localStorage.setItem( 'token', state.token );
-        localStorage.setItem( 'role',  state.role );
-        localStorage.setItem( 'auth',  state.auth );
+        localStorage.setItem( 'phenix.user',  state.username );
+        localStorage.setItem( 'phenix.token', state.token );
+        localStorage.setItem( 'phenix.role',  state.role );
+        localStorage.setItem( 'phenix.auth',  true );
       }
 
       if ( state.role === "VM Viewer" ) {
@@ -42,24 +39,14 @@ export default new Vuex.Store({
       state.token    = null;
       state.role     = null;
       state.auth     = false;
-      state.logs     = [];
 
-      if ( localStorage.getItem( 'auth' ) ) {
-        localStorage.removeItem( 'user' );
-        localStorage.removeItem( 'token' );
-        localStorage.removeItem( 'role' );
-        localStorage.setItem( 'auth', state.auth );
-      }
+      localStorage.removeItem( 'phenix.user' );
+      localStorage.removeItem( 'phenix.token' );
+      localStorage.removeItem( 'phenix.role' );
+      localStorage.setItem( 'phenix.auth', false );
+
       router.replace( '/signin' );
     }
-    
-//     'INIT_LOGS' ( state, { logs } ) {
-//       state.logs.push(...logs);
-//     },
-// 
-//     'LOG' ( state, { log } ) {
-//       state.logs.push( log );
-//     }
   },
   
   getters: {
@@ -78,9 +65,5 @@ export default new Vuex.Store({
     auth: state => {
       return state.auth;
     }
-
-//     logs: state => {
-//       return state.logs;
-//     }
   }
 });

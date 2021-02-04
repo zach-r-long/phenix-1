@@ -25,23 +25,38 @@
           </b-field>
           <b-field label="Role">
             <b-select v-model="user.role_name" expanded>
-              <option v-for="r in roles">
+              <option v-for="(r, idx) in roles" :key="idx">
                 {{ r }}
               </option>
             </b-select>
           </b-field>
-          <b-tooltip label="resource names can include wildcards for broad  
-                  assignment (ex. *inv*); they can also include `!` to not   
-                  allow access to a resource (ex. !*inv*)" 
-                  type="is-light is-right" 
-                  multilined>            
-          <b-field label="Resource Name(s)"></b-field>
-          <b-icon icon="question-circle" style="color:#383838"></b-icon>
+          <b-field>
+            <b-button type="is-small is-warning" inverted rounded outlined @click="userRoles=true">
+              user roles explained
+            </b-button>
+          </b-field>
+          <b-tooltip label="experiment names can include wildcards for broad
+                  assignment (ex. *inv*); they can also include `!` to not
+                  allow access to a resource (ex. !*inv*)"
+                  type="is-light is-right"
+                  multilined>
+            <b-field label="Experiment Name(s)"></b-field>
+            <b-icon icon="question-circle" style="color:#383838"></b-icon>
           </b-tooltip>
-            <b-input type="text" v-model="user.resource_names"></b-input>
+          <b-input type="text" v-model="user.experiments"></b-input>
+          <br/>
+          <b-tooltip label="resource names can include wildcards for broad
+                  assignment (ex. *inv*); they can also include `!` to not
+                  allow access to a resource (ex. !*inv*)"
+                  type="is-light is-right"
+                  multilined>
+            <b-field label="Resource Name(s)"></b-field>
+            <b-icon icon="question-circle" style="color:#383838"></b-icon>
+          </b-tooltip>
+          <b-input type="text" v-model="user.resource_names"></b-input>
         </section>
         <footer class="modal-card-foot buttons is-right">
-          <button class="button is-light" @click="createUser">Create User</button>
+          <button class="button is-light" @click="createUser(false)">Create User</button>
         </footer>
       </div>
     </b-modal>
@@ -59,10 +74,18 @@
           </b-field>
           <b-field label="Role">
             <b-select v-model="user.role_name" expanded>
-              <option v-for="r in roles">
+              <option v-for="(r, idx) in roles" :key="idx">
                 {{ r }}
               </option>
             </b-select>
+          </b-field>
+          <b-field>
+            <b-button type="is-small is-warning" inverted rounded outlined @click="userRoles=true">
+              user roles explained
+            </b-button>
+          </b-field>
+          <b-field label="Experiment Name(s)">
+            <b-input type="text" v-model="user.experiments"></b-input>
           </b-field>
           <b-field label="Resource Name(s)">
             <b-input type="text" v-model="user.resource_names"></b-input>
@@ -73,12 +96,41 @@
         </footer>
       </div>
     </b-modal>
+    <b-modal :active.sync="userRoles" has-modal-card>
+      <div class="modal-card" style="width:70em">
+        <header class="modal-card-head">
+          <p class="modal-card-title">User Roles Explained</p>
+        </header>
+        <section class="modal-card-body">
+          <p class="color-black">
+            Global Admin is the administrator level account and has access to
+            all capabilities, to include user management. Global Admins also
+            have access to all resources. The following table provides a
+            high-level overview of all the available roles and their access
+            rights. For a more detailed explanation, including additional
+            resources and subresources, please refer to the official phenix
+            documentation on <a class="color-orange" target="_blank"
+            href="https://activeshadow.com/minimega/user-administration/#role">User
+            Administration</a>.
+          </p>
+          <template>
+            <b-table :data="aboutRoles" :columns="aboutCol"></b-table>
+          </template>
+          <div class="color-black">
+            Key: E - experiment resource, V - VM resource, U - user resource
+          </div>
+        </section>
+        <footer class="modal-card-foot buttons is-right">
+          <button class="button is-light" @click="userRoles = false">Close</button>
+        </footer>
+      </div>
+    </b-modal>
     <template>
       <hr>
       <b-field grouped position="is-right">
         <p v-if="adminUser()" class="control">
           <b-tooltip label="create a new user" type="is-light is-left">
-            <button class="button is-light" @click="isCreateActive = true">
+            <button class="button is-light" @click="createUser(true)">
               <b-icon icon="plus"></b-icon>
             </button>
           </b-tooltip>
@@ -116,7 +168,13 @@
               {{ props.row.last_name }}
             </b-table-column>
             <b-table-column field="role" label="Role" sortable>
-              {{ props.row.role_name ? props.row.role_name : "Not yet assigned" }}
+              <b-tooltip label="show role explanations" type="is-dark">
+                <div class="field">
+                  <div @click="userRoles=true">
+                    {{ props.row.rbac.roleName ? props.row.rbac.roleName : "Not yet assigned" }}
+                  </div>
+                </div>
+              </b-tooltip>
             </b-table-column>
             <b-table-column v-if="adminUser()" label="Delete" width="50" centered>
               <button class="button is-light is-small" @click="deleteUser( props.row.username )">
@@ -177,8 +235,7 @@
         switch ( msg.resource.action ) {
           case 'create': {
             let user = msg.result;
-
-            user.resource_names = user.resource_names.join( ' ' );
+            user = this.parseUserRole(user);
             users.push( user );
       
             this.users = [ ...users ];
@@ -195,8 +252,7 @@
             for ( let i = 0; i < users.length; i++ ) {
               if ( users[i].username == msg.resource.name ) {
                 let user = msg.result;
-
-                user.resource_names = user.resource_names.join( ' ' );
+                user = this.parseUserRole(user);
                 users[i] = user;
 
                 break;
@@ -238,7 +294,14 @@
           response => {
             response.json().then(
               state => {
-                this.users = state.users;
+                let users = [];
+
+                state.users.forEach( u => {
+                  u = this.parseUserRole(u);
+                  users.push(u);
+                });
+
+                this.users = users;
                 this.isWaiting = false;
               }
             );
@@ -262,7 +325,85 @@
         return [ 'Global Admin', 'Experiment Admin', 'Experiment User' ].includes( this.$store.getters.role );
       },
 
-      createUser () {
+      parseUserRole( user ) {
+        if ( user.rbac ) {
+          user.role_name = user.rbac.roleName;
+
+          let experiments = [];
+          let resource_names = [];
+
+          /* parse policies to get accurate experiments and resource names */
+          for ( let i = 0; i < user.rbac.policies.length; i++ ) {
+            let policy = user.rbac.policies[i];
+
+            /* not all policies are scoped by experiments */
+            if ( policy.experiments ) {
+              experiments.push(...policy.experiments);
+            }
+
+            /*
+             * Don't worry about processing resources if this policy has no
+             * resource names associated with it (which should rarely happen, if
+             * ever).
+             */
+            if ( !policy.resourceNames ) {
+              continue;
+            }
+
+            policy.resources.forEach( r => {
+              let tokens = r.split('/');
+
+              switch ( tokens[0] ) {
+                case 'vms': {
+                  let names = policy.resourceNames.map(n => 'vms/' + n);
+                  resource_names.push(...names);
+                  break;
+                }
+
+                case 'hosts': {
+                  let names = policy.resourceNames.map(n => 'hosts/' + n);
+                  resource_names.push(...names);
+                  break;
+                }
+
+                case 'disks': {
+                  let names = policy.resourceNames.map(n => 'disks/' + n);
+                  resource_names.push(...names);
+                  break;
+                }
+              }
+            });
+          }
+
+          if ( experiments.length != 0 ) {
+            user.experiments = _.uniq( experiments ).join(' ');
+          } else {
+            /* assume access to all experiments if not specified in policy */
+            user.experiments = '*';
+          }
+
+          if ( resource_names.length != 0 ) {
+            user.resource_names = _.uniq( resource_names ).join(' ');
+          } else {
+            /* assume access to all resources if not specified in policy */
+            user.resource_names = '*';
+          }
+        }
+
+        return user;
+      },
+
+      createUser (init) {
+        if ( init ) {
+          this.user.experiments = this.user.experiments.join(' ');
+          this.user.resource_names = this.user.resource_names.join(' ');
+
+          // this will show create modal
+          this.isCreateActive = true;
+
+          return
+        }
+
         for ( let i = 0; i < this.users.length; i++ ) {
           if ( this.users[i].username == this.user.username ) {
             this.userExists = true;
@@ -342,8 +483,12 @@
           return;
         }
 
+        if ( this.user.experiments ) {
+          this.user.experiments = this.user.experiments.split(/\s+/);
+        }
+
         if ( this.user.resource_names ) {
-          this.user.resource_names = this.user.resource_names.split(' ');
+          this.user.resource_names = this.user.resource_names.split(/\s+/);
         }
 
         this.isWaiting = true;
@@ -378,8 +523,6 @@
           }
         }
 
-        this.user.resource_names = _.uniq(this.user.resource_names).join(' ');
-
         this.isEditActive = true;
       },
 
@@ -402,7 +545,8 @@
         
         let user = this.user;
 
-        user.resource_names = user.resource_names.split(' ');
+        user.experiments = user.experiments.split(/\s+/);
+        user.resource_names = user.resource_names.split(/\s+/);
         
         this.isEditActive = false;
         this.isWaiting = true;
@@ -486,7 +630,11 @@
       },
 
       resetLocalUser () {
-        this.user = {};
+        this.user = {
+          'experiments': ['*'],
+          'resource_names': ['vms/*', 'hosts/*', 'disks/*']
+        };
+
       }
     },
 
@@ -503,18 +651,69 @@
         },
         roles: [
           'Global Admin',
+          'Global Viewer',
           'Experiment Admin',
           'Experiment User',
           'Experiment Viewer',
           'VM Viewer'
         ],
         users: [],
-        user: {},
+        user: {
+          'experiments': ['*'],
+          'resource_names': ['vms/*', 'hosts/*', 'disks/*']
+        },
+        aboutRoles: [
+          { 'role': 'Global Admin', 'limits': 'Can see and control absolutely anything/everything.', 'list': 'E V U', 'get': 'E V U', 'create': 'E V U', 'update': 'E V U', 'patch': 'E V U', 'delete': 'E V U' },
+          { 'role': 'Global Viewer', 'limits': 'Can see absolutely anything/everything, but cannot make any changes.', 'list': 'E V U', 'get': 'E V U', 'create': '', 'update': '', 'patch': '', 'delete': '' },
+          { 'role': 'Experiment Admin', 'limits': 'Can see and control anything/everything for assigned experiments, including VMs, but cannot create new experiments.', 'list': 'E V', 'get': 'E V', 'create': 'V', 'update': 'E V', 'patch': 'V', 'delete': 'V' },
+          { 'role': 'Experiment User', 'limits': 'Can see assigned experiments, and can control VMs within assigned experiments, but cannot modify experiments themselves.', 'list': 'E V', 'get': 'E V', 'create': '', 'update': '', 'patch': 'V', 'delete': '' },
+          { 'role': 'Experiment Viewer', 'limits': 'Can see assigned experiments and VMs within assigned experiments, but cannot modify or control experiments or VMs.', 'list': 'E V', 'get': 'E V', 'create': '', 'update': '', 'patch': '', 'delete': '' },
+          { 'role': 'VM Viewer', 'limits': 'Can only see VM screenshots and access VM VNC, nothing else.', 'list': '', 'get': 'V', 'create': '', 'update': '', 'patch': '', 'delete': '' }
+        ],
+        aboutCol: [
+          { field: 'role', label: 'Role' },
+          { field: 'limits', label: 'Limits' },
+          { field: 'list', label: 'List', width: '75' },
+          { field: 'get', label: 'Get', width: '75' },
+          { field: 'create', label: 'Create' },
+          { field: 'update', label: 'Update' },
+          { field: 'patch', label: 'Patch' },
+          { field: 'delete', label: 'Delete' }
+        ],
         userExists: false,
         isCreateActive: false,
         isEditActive: false,
-        isWaiting: true
+        isWaiting: true,
+        userRoles: false
       }
     }
   }
 </script>
+
+<style scoped>
+ul {
+  columns: 2;
+  -webkit-columns: 2;
+  -moz-columns: 2;
+}
+
+li {
+  color: black !important;
+}
+
+.color-black {
+  color: black !important;
+}
+
+a.color-orange:link {
+  color: #CC5500 !important;
+}
+
+a.color-orange:visited {
+  color: #CC5500 !important;
+}
+
+a.color-orange:hover {
+  color: #CC5500 !important;
+}
+</style>

@@ -5,7 +5,9 @@ metadata:
 spec:
   roleName: Global Viewer
   policies:
-  - resources:
+  - experiments:
+    - "*"
+    resources:
     - "*"
     - "*/*"
     resourceNames:

@@ -46,6 +46,37 @@ func RoleFromConfig(name string) (*Role, error) {
 	return &Role{Spec: &role}, nil
 }
 
+func (this *Role) SetExperiments(exp ...string) error {
+	// Gracefully handle when no experiments or a single empty experiment is
+	// passed, defaulting to allow all.
+	switch len(exp) {
+	case 0:
+		exp = []string{"*"}
+	case 1:
+		if string(exp[0]) == "" {
+			exp[0] = "*"
+		}
+	}
+
+	for _, policy := range this.Spec.Policies {
+		if policy.Experiments != nil {
+			return fmt.Errorf("experiments already exist for policy")
+		}
+
+		for _, e := range exp {
+			// Checking to make sure pattern given in 'e' is valid. Thus, the string
+			// provided to match it against is useless.
+			if _, err := filepath.Match(e, "useless"); err != nil {
+				continue
+			}
+
+			policy.Experiments = append(policy.Experiments, e)
+		}
+	}
+
+	return nil
+}
+
 func (this *Role) SetResourceNames(names ...string) error {
 	// Gracefully handle when no names or a single empty name is passed,
 	// defaulting to allow all.
@@ -64,6 +95,28 @@ func (this *Role) SetResourceNames(names ...string) error {
 		}
 
 		for _, name := range names {
+			tokens := strings.Split(name, "/")
+
+			// A resource name can be prefixed with the resource type it applies to
+			// (ie. vms/* or users/*). If that's the case, only add it to this policy
+			// if the policy is for said resources.
+
+			if len(tokens) > 1 {
+				var included bool
+
+				for _, r := range policy.Resources {
+					if strings.HasPrefix(r, tokens[0]) {
+						name = tokens[1]
+						included = true
+						break
+					}
+				}
+
+				if !included {
+					continue
+				}
+			}
+
 			// Checking to make sure pattern given in 'name' is valid. Thus, the
 			// string provided to match it against is useless.
 			if _, err := filepath.Match(name, "useless"); err != nil {
@@ -77,27 +130,37 @@ func (this *Role) SetResourceNames(names ...string) error {
 	return nil
 }
 
-func (this *Role) AddPolicy(r, rn, v []string) {
+func (this *Role) AddPolicy(r, e, v, names []string) {
 	policy := &v1.PolicySpec{
+		Experiments:   e,
 		Resources:     r,
-		ResourceNames: rn,
+		ResourceNames: names,
 		Verbs:         v,
 	}
 
 	this.Spec.Policies = append(this.Spec.Policies, policy)
 }
 
-func (this Role) Allowed(resource, verb string, names ...string) bool {
-	for _, policy := range this.policiesForResource(resource) {
-		if policy.verbAllowed(verb) {
-			if len(names) == 0 {
-				return true
-			}
+func (this Role) Allowed(resource, exp, verb string, names ...string) bool {
+	// Access is allowed if *any* policy included in this role allows access. As
+	// such, we need to be sure to check *all* policies before denying access.
 
-			for _, n := range names {
-				if policy.resourceNameAllowed(n) {
-					return true
-				}
+	for _, policy := range this.policiesForResource(resource) {
+		if !policy.experimentAllowed(exp) {
+			continue
+		}
+
+		if !policy.verbAllowed(verb) {
+			continue
+		}
+
+		if len(names) == 0 {
+			return true
+		}
+
+		for _, n := range names {
+			if policy.resourceNameAllowed(n) {
+				return true
 			}
 		}
 	}

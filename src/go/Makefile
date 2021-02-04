@@ -31,29 +31,24 @@ clean:
 	$(RM) tmpl/bindata.go
 	$(RM) util/shell/mock.go
 	$(RM) web/bindata.go
-	$(RM) web/proto/*.pb.go
 	$(RM) web/public/docs/index.html
 	$(RM) web/public/favicon.ico
 	$(RM) web/public/index.html
 	$(RM) -r web/public/assets
 
 .PHONY: install-build-deps
-install-build-deps: bin/go-bindata bin/mockgen bin/protoc-gen-go
+install-build-deps: bin/go-bindata bin/mockgen
 
 .PHONY: remove-build-deps
 remove-build-deps:
 	$(RM) bin/go-bindata
 	$(RM) bin/mockgen
-	$(RM) bin/protoc-gen-go
 
 bin/go-bindata:
 	go install github.com/go-bindata/go-bindata/v3/go-bindata
 
 bin/mockgen:
 	go install github.com/golang/mock/mockgen
-
-bin/protoc-gen-go:
-	go install google.golang.org/protobuf/cmd/protoc-gen-go
 
 .PHONY: generate-bindata
 generate-bindata: api/config/bindata.go tmpl/bindata.go web/bindata.go
@@ -85,24 +80,6 @@ store/mock.go: store/store.go bin/mockgen
 util/shell/mock.go: util/shell/shell.go bin/mockgen
 	$(GOBIN)/mockgen -self_package phenix/util/shell -destination util/shell/mock.go -package shell phenix/util/shell Shell
 
-.PHONY: generate-protobuf
-generate-protobuf: web/proto/experiment.pb.go web/proto/host.pb.go web/proto/log.pb.go web/proto/user.pb.go web/proto/vm.pb.go
-
-web/proto/experiment.pb.go: web/proto/*.proto bin/protoc-gen-go
-	protoc -I . -I web/proto --go_out=paths=source_relative:. ./web/proto/experiment.proto
-
-web/proto/host.pb.go: web/proto/*.proto bin/protoc-gen-go
-	protoc -I . -I web/proto --go_out=paths=source_relative:. ./web/proto/host.proto
-
-web/proto/log.pb.go: web/proto/*.proto bin/protoc-gen-go
-	protoc -I . -I web/proto --go_out=paths=source_relative:. ./web/proto/log.proto
-
-web/proto/user.pb.go: web/proto/*.proto bin/protoc-gen-go
-	protoc -I . -I web/proto --go_out=paths=source_relative:. ./web/proto/user.proto
-
-web/proto/vm.pb.go: web/proto/*.proto bin/protoc-gen-go
-	protoc -I . -I web/proto --go_out=paths=source_relative:. ./web/proto/vm.proto
-
-bin/phenix: $(GOSOURCES) generate-bindata generate-protobuf
+bin/phenix: $(GOSOURCES) generate-bindata
 	mkdir -p bin
 	CGO_ENABLED=0 GOOS=linux go build -a -ldflags="-X 'phenix/version.Version=$(VERSION)' -s -w" -trimpath -o bin/phenix main.go

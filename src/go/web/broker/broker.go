@@ -28,10 +28,10 @@ func Start() {
 
 				if policy == nil {
 					allow = true
-				} else if policy.ResourceName == "" {
-					allow = cli.role.Allowed(policy.Resource, policy.Verb)
+				} else if policy.ResourceNames == nil {
+					allow = cli.role.Allowed(policy.Resource, policy.Experiment, policy.Verb)
 				} else {
-					allow = cli.role.Allowed(policy.Resource, policy.Verb, policy.ResourceName)
+					allow = cli.role.Allowed(policy.Resource, policy.Experiment, policy.Verb, policy.ResourceNames...)
 				}
 
 				if allow {

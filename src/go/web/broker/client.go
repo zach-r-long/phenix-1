@@ -12,16 +12,13 @@ import (
 	"phenix/api/experiment"
 	"phenix/api/vm"
 	"phenix/internal/mm"
-	"phenix/web/proto"
+	"phenix/web/contract"
 	"phenix/web/rbac"
 	"phenix/web/util"
 
 	log "github.com/activeshadow/libminimega/minilog"
 	"github.com/gorilla/websocket"
-	"google.golang.org/protobuf/encoding/protojson"
 )
-
-var marshaler = protojson.MarshalOptions{EmitUnpopulated: true}
 
 type vmScope struct {
 	exp  string
@@ -139,12 +136,12 @@ func (this *Client) read() {
 			continue
 		}
 
-		if !this.role.Allowed("vms", "list") {
-			log.Warn("client access to vms/list forbidden")
+		expName := req.Resource.Name
+
+		if !this.role.Allowed("vms", expName, "list") {
+			log.Warn("client access to vms/list for this experiment forbidden")
 			continue
 		}
-
-		expName := req.Resource.Name
 
 		exp, err := experiment.Get(expName)
 		if err != nil {
@@ -180,7 +177,7 @@ func (this *Client) read() {
 				continue
 			}
 
-			if this.role.Allowed("vms", "list", fmt.Sprintf("%s_%s", expName, vm.Name)) {
+			if this.role.Allowed("vms", expName, "list", vm.Name) {
 				if vm.Running {
 					screenshot, err := util.GetScreenshot(expName, vm.Name, "200")
 					if err != nil {
@@ -221,14 +218,7 @@ func (this *Client) read() {
 
 		this.Unlock()
 
-		resp := &proto.VMList{Total: uint32(len(allowed))}
-
-		resp.Vms = make([]*proto.VM, len(allowed))
-		for i, v := range allowed {
-			resp.Vms[i] = util.VMToProtobuf(exp.Metadata.Name, v)
-		}
-
-		body, err := marshaler.Marshal(resp)
+		body, err := json.Marshal(contract.NewVMList(allowed))
 		if err != nil {
 			log.Error("marshaling experiment %s VMs for WebSocket client: %v", exp, err)
 			continue

@@ -5,7 +5,9 @@ metadata:
 spec:
   roleName: Global Admin
   policies:
-  - resources:
+  - experiments:
+    - "*"
+    resources:
     - "*"
     - "*/*"
     resourceNames:

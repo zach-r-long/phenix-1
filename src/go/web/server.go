@@ -39,13 +39,19 @@ func Start(opts ...ServerOption) error {
 			return fmt.Errorf("getting %s role: %w", rname, err)
 		}
 
-		role.SetResourceNames(creds[3:]...)
+		if len(creds) > 3 {
+			exp := strings.Split(creds[3], ",")
+
+			role.SetExperiments(exp...)
+			role.SetResourceNames(creds[4:]...)
+		}
 
 		// allow user to get their own user details
 		role.AddPolicy(
 			[]string{"users"},
-			[]string{uname},
+			nil,
 			[]string{"get"},
+			[]string{uname},
 		)
 
 		user.SetRole(role)
@@ -110,7 +116,6 @@ func Start(opts ...ServerOption) error {
 	api.HandleFunc("/experiments/{exp}/vms/{name}/snapshots/{snapshot}", RestoreVM).Methods("POST", "OPTIONS")
 	api.HandleFunc("/experiments/{exp}/vms/{name}/commit", CommitVM).Methods("POST", "OPTIONS")
 	api.HandleFunc("/vms", GetAllVMs).Methods("GET", "OPTIONS")
-	api.HandleFunc("/applications", GetApplications).Methods("GET", "OPTIONS")
 	api.HandleFunc("/topologies", GetTopologies).Methods("GET", "OPTIONS")
 	api.HandleFunc("/topologies/{topo}/scenarios", GetScenarios).Methods("GET", "OPTIONS")
 	api.HandleFunc("/disks", GetDisks).Methods("GET", "OPTIONS")

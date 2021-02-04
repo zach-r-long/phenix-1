@@ -1,15 +1,18 @@
 package broker
 
-import "encoding/json"
+import (
+	"encoding/json"
+)
 
 type RequestPolicy struct {
-	Resource     string
-	ResourceName string
-	Verb         string
+	Resource      string
+	Experiment    string
+	Verb          string
+	ResourceNames []string
 }
 
-func NewRequestPolicy(r, rn, v string) *RequestPolicy {
-	return &RequestPolicy{Resource: r, ResourceName: rn, Verb: v}
+func NewRequestPolicy(r, e, v string, names ...string) *RequestPolicy {
+	return &RequestPolicy{Resource: r, Experiment: e, Verb: v, ResourceNames: names}
 }
 
 type Resource struct {

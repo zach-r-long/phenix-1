@@ -33,10 +33,10 @@ login and returns a user to Experiments component if successful.
     },
     
     created () {
-      const username = localStorage.getItem( 'user' );
-      const token    = localStorage.getItem( 'token' );
-      const role     = localStorage.getItem( 'role' );
-      const auth     = localStorage.getItem( 'auth' );
+      const username = localStorage.getItem( 'phenix.user' );
+      const token    = localStorage.getItem( 'phenix.token' );
+      const role     = localStorage.getItem( 'phenix.role' );
+      const auth     = localStorage.getItem( 'phenix.auth' );
 
       if ( token && auth ) {
         const user = {
@@ -53,8 +53,6 @@ login and returns a user to Experiments component if successful.
       this.unwatch = this.$store.watch(
         (_, getters) => getters.auth,
         () => {
-          console.log(auth);
-
           // Disconnect the websocket client no matter what on auth changes.
           this.$disconnect();
           this.wsConnect();

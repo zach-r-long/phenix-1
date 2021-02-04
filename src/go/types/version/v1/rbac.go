@@ -6,6 +6,7 @@ type RoleSpec struct {
 }
 
 type PolicySpec struct {
+	Experiments   []string `yaml:"experiments" json:"experiments" structs:"experiments" mapstructure:"experiments"`
 	Resources     []string `yaml:"resources" json:"resources" structs:"resources" mapstructure:"resources"`
 	ResourceNames []string `yaml:"resourceNames" json:"resourceNames" structs:"resourceNames" mapstructure:"resourceNames"`
 	Verbs         []string `yaml:"verbs" json:"verbs" structs:"verbs" mapstructure:"verbs"`
