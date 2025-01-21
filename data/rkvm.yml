@@ -1,0 +1,39 @@
+apiVersion: phenix.sandia.gov/v1
+kind: Topology
+metadata:
+  name: RKVM
+  created: '2025-01-19T20:14:26Z'
+  updated: '2025-01-21T01:47:50Z'
+spec:
+  nodes:
+    - general:
+        do_not_boot: false
+        hostname: test
+        snapshot: false
+        vm_type: rkvm
+        vnc_host: 2.2.2.14
+        vnc_port: 5900
+      hardware:
+        drives:
+          - cache_mode: writeback
+            image: ubuntu.qc2
+            inject_partition: 2
+            interface: ide
+        os_type: windows
+      network:
+        interfaces:
+          - address: 192.168.1.100
+            autostart: true
+            bridge: phenix
+            dns:
+              - 192.168.1.1
+            driver: e1000
+            gateway: 192.168.1.1
+            mac: '00:11:22:33:44:55'
+            mask: 24
+            mtu: 1500
+            name: eth0
+            proto: static
+            type: ethernet
+            vlan: EXP-1
+      type: VirtualMachine

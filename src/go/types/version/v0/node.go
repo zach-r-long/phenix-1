@@ -18,7 +18,6 @@ type Node struct {
 	HardwareF    *Hardware              `json:"hardware" yaml:"hardware" structs:"hardware" mapstructure:"hardware"`
 	NetworkF     *Network               `json:"network" yaml:"network" structs:"network" mapstructure:"network"`
 	InjectionsF  []*Injection           `json:"injections" yaml:"injections" structs:"injections" mapstructure:"injections"`
-
 }
 
 func (this Node) Annotations() map[string]interface{} {
@@ -169,7 +168,8 @@ type General struct {
 	VMTypeF      string `json:"vm_type" yaml:"vm_type" structs:"vm_type" mapstructure:"vm_type"`
 	SnapshotF    *bool  `json:"snapshot" yaml:"snapshot" structs:"snapshot" mapstructure:"snapshot"`
 	DoNotBootF   *bool  `json:"do_not_boot" yaml:"do_not_boot" structs:"do_not_boot" mapstructure:"do_not_boot"`
-
+	VncHostF     string `json:"vnc_host" yaml:"vnc_host" structs:"vnc_host" mapstructure:"vnc_host"`
+	VncPortF     int    `json:"vnc_port" yaml:"vnc_port" structs:"vnc_port" mapstructure:"vnc_port"`
 }
 
 func (this General) Hostname() string {
@@ -187,7 +187,7 @@ func (this General) VMType() string {
 func (this General) Snapshot() *bool {
 	return this.SnapshotF
 }
-func (this *General) SetSnapshot(b bool)  {
+func (this *General) SetSnapshot(b bool) {
 	this.SnapshotF = &b
 }
 
@@ -356,6 +356,10 @@ func (this *Node) SetDefaults() {
 		this.HardwareF.OSTypeF = "linux"
 	}
 
+	if this.GeneralF.VncPortF == 0 {
+		this.GeneralF.VncPortF = 5900
+	}
+
 	this.NetworkF.SetDefaults()
 }
 
@@ -423,4 +427,16 @@ func (this Drive) GetInjectPartition() int {
 	}
 
 	return *this.InjectPartitionF
+}
+
+func (this *General) VncHost() string {
+	if this == nil {
+		return ""
+	}
+
+	return this.VncHostF
+}
+
+func (this *General) VncPort() int {
+	return this.VncPortF
 }

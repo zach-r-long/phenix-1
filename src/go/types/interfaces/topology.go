@@ -58,8 +58,9 @@ type NodeGeneral interface {
 	Snapshot() *bool
 	SetSnapshot(bool)
 	DoNotBoot() *bool
-
 	SetDoNotBoot(bool)
+	VncHost() string
+	VncPort() int
 }
 
 type NodeHardware interface {
